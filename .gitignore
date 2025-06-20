@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.ipynb_checkpoints
+
+# Environments
+yolo5/
+yolov5-env/
+.env
+.venv/
+
+# Model weights
+*.pt
+
+# Streamlit cache
+.streamlit/
