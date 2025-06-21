@@ -17,7 +17,7 @@
 
 The custom object detection model was trained using **YOLOv5** with annotated fridge/kitchen images.
 
-📍 Model training notebook: 
+📍 Model training notebook: `https://github.com/Greeshma-10/nutriVision`
 
 - Classes trained: avocado, cabbage, onion, tomato, potato, garlic, peas, eggplant, carrot, etc.
 - Training platform: Google Colab with custom dataset
