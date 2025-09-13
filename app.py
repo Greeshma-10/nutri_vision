@@ -1,135 +1,128 @@
-import streamlit as st
-import torch
-from PIL import Image
-import numpy as np
-import sys
 import os
+import streamlit as st
+import requests
+from PIL import Image
+from dotenv import load_dotenv
+import torch
 
-# Set path to yolov5
-sys.path.append('./yolov5')
+# ----------------- Load .env and API key -----------------
+load_dotenv()
+SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
+if not SPOONACULAR_API_KEY:
+    st.error("⚠️ Spoonacular API key not found. Please check your .env file.")
 
-from models.common import DetectMultiBackend
-from utils.augmentations import letterbox
-from utils.general import non_max_suppression
-from utils.torch_utils import select_device
+# ----------------- Helper Functions -----------------
 
-# 🔖 Recipe Ingredients Map
-recipe_map = {
-    "Tomato Onion Curry": {"tomato", "onion"},
-    "Vegetable Pulao": {"peas", "carrot", "potato"},
-    "Baingan Bharta": {"eggplant", "onion", "garlic"},
-    "Cabbage Stir Fry": {"cabbage", "garlic"},
-    "Pumpkin Soup": {"pumpkin", "onion"},
-    "Mixed Veg Sabzi": {"tomato", "potato", "carrot", "peas", "onion"},
-    "Avocado Salad": {"avocado", "cucumber", "corn"},
-    "Broccoli Stir Fry": {"broccoli", "garlic"},
-    "Peas Curry": {"peas", "onion", "tomato"},
-}
+# Ingredient normalization
+def normalize_ingredients(ingredients):
+    mapping = {
+        "tomato": "tomatoes",
+        "potato": "potatoes",
+        "onion": "onions",
+        "chili": "chili pepper",
+        "capsicum": "bell pepper",
+        "eggplant": "eggplant",
+        "brinjal": "eggplant"
+    }
+    return [mapping.get(ing.lower(), ing.lower()) for ing in ingredients]
 
-# 🥗 Nutritional Info for Each Dish
-recipe_nutrition = {
-    "Tomato Onion Curry": {"Calories": 120, "Protein": "2g", "Carbs": "12g", "Fats": "6g"},
-    "Vegetable Pulao": {"Calories": 250, "Protein": "5g", "Carbs": "35g", "Fats": "8g"},
-    "Baingan Bharta": {"Calories": 150, "Protein": "3g", "Carbs": "14g", "Fats": "7g"},
-    "Cabbage Stir Fry": {"Calories": 110, "Protein": "2g", "Carbs": "10g", "Fats": "5g"},
-    "Pumpkin Soup": {"Calories": 100, "Protein": "2g", "Carbs": "15g", "Fats": "3g"},
-    "Mixed Veg Sabzi": {"Calories": 180, "Protein": "4g", "Carbs": "20g", "Fats": "7g"},
-    "Avocado Salad": {"Calories": 200, "Protein": "3g", "Carbs": "10g", "Fats": "16g"},
-    "Broccoli Stir Fry": {"Calories": 130, "Protein": "4g", "Carbs": "9g", "Fats": "6g"},
-    "Peas Curry": {"Calories": 160, "Protein": "6g", "Carbs": "18g", "Fats": "5g"},
-}
+# Fetch recipes by ingredients
+def get_recipes(ingredients, number=5):
+    url = "https://api.spoonacular.com/recipes/findByIngredients"
+    params = {
+        "apiKey": SPOONACULAR_API_KEY,
+        "ingredients": ",".join(ingredients),
+        "number": number,
+        "ranking": 1,
+        "ignorePantry": True
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"⚠️ Error {response.status_code}: {response.text}")
+        return []
 
-# 🍽️ Recommend dishes from detected ingredients
-def recommend_dishes(detected_items, recipe_map):
-    detected_set = set(item.strip().lower() for item in detected_items)
-    matches = []
-    for dish, ingredients in recipe_map.items():
-        if ingredients & detected_set:
-            matched = ingredients & detected_set
-            missing = ingredients - detected_set
-            matches.append((dish, matched, missing))
-    return matches
+# Fetch full recipe info with nutrition
+def get_recipe_info(recipe_id):
+    url = f"https://api.spoonacular.com/recipes/{recipe_id}/information"
+    params = {"apiKey": SPOONACULAR_API_KEY, "includeNutrition": True}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    return {}
 
-# 📦 Load YOLOv5 model
+# ----------------- Load YOLOv5 Model -----------------
 @st.cache_resource
 def load_model():
-    device = select_device('cpu')  # or 'cuda'
-    model = DetectMultiBackend('nutrition_best_windows.pt', device=device, dnn=False)
-    return model, device
+    # Using torch.hub to load custom trained YOLOv5 model
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path='nutrition_best_windows.pt', force_reload=True)
+    return model
 
-# 🔁 Main App Logic
-model, device = load_model()
+model = load_model()
 
-st.title("🥦 nutriVision — YOLOv5 Food Detector")
+# ----------------- Streamlit UI -----------------
+st.title("🥗 Smart Recipe Recommender")
+st.write("Upload an image of food items and get recipe suggestions with nutrition info!")
 
-uploaded_files = st.file_uploader("📷 Upload one or more food/fridge images", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+uploaded_file = st.file_uploader("📸 Upload a fridge/ingredient photo", type=["jpg", "jpeg", "png"])
 
-if uploaded_files:
-    combined_detected = set()
+if uploaded_file:
+    image = Image.open(uploaded_file).convert("RGB")
+    st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    for uploaded_file in uploaded_files:
-        st.markdown(f"---\n### 📸 {uploaded_file.name}")
-        image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="Uploaded Image", use_container_width=True)
+    # ----------------- Run YOLOv5 Detection -----------------
+    with st.spinner("🔍 Detecting ingredients..."):
+        results = model(image)  # pass PIL image directly
+        detections = results.pandas().xyxy[0]  # pandas DataFrame
+        detected_items = detections[detections['confidence'] > 0.3]['name'].tolist()
+        detected_items = list(set(detected_items))  # remove duplicates
 
-        img = np.array(image)
-        img = letterbox(img, 640, stride=32, auto=True)[0]
-        img = img.transpose((2, 0, 1))
-        img = np.ascontiguousarray(img)
+    if not detected_items:
+        st.warning("⚠️ No ingredients detected. Please upload a clearer image.")
+    else:
+        st.markdown("### ✅ Detected Ingredients:")
+        st.write(", ".join(detected_items))
 
-        img_tensor = torch.from_numpy(img).to(device).float() / 255.0
-        img_tensor = img_tensor.unsqueeze(0)
+        # Normalize for Spoonacular API
+        normalized_detected = normalize_ingredients(detected_items)
 
-        with st.spinner("🔍 Detecting items..."):
-            pred = model(img_tensor, augment=False, visualize=False)
-            pred = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45)
-
-            names = model.names
-            detected = set()
-            for det in pred:
-                if len(det):
-                    for *xyxy, conf, cls in det:
-                        detected.add(names[int(cls)])
-
-        if detected:
-            st.success("✅ Items detected in this image:")
-            st.write(", ".join(sorted(detected)))
-            combined_detected.update(detected)
-        else:
-            st.warning("😕 No items detected in this image.")
-
-    # 🧠 Final Suggestions
-    if combined_detected:
-        st.markdown("---")
-        st.header("🍛 Combined Recommendation")
-        st.write("Detected across all images:", ", ".join(sorted(combined_detected)))
-
-        recipes = recommend_dishes(combined_detected, recipe_map)
+        # ----------------- Fetch Recipes -----------------
+        recipes = get_recipes(normalized_detected, number=10)
 
         if recipes:
             st.markdown("---")
-            st.subheader("🌟 Final Recipe Suggestions")
+            st.subheader("🍽️ Recommended Recipes")
+            for recipe in recipes:
+                title = recipe.get("title", "Unknown Dish")
+                image_url = recipe.get("image", "")
 
-            for dish, matched, missing in recipes:
-                nutrition = recipe_nutrition.get(dish, {})
-                nutrient_html = "".join(
-                    f"<li><b>{key}:</b> {value}</li>" for key, value in nutrition.items()
-                ) if nutrition else "<li>No data available</li>"
+                # Ingredients info
+                used = [ing.get("name", "").lower() for ing in recipe.get("usedIngredients", [])]
+                missed = [ing.get("name", "").lower() for ing in recipe.get("missedIngredients", [])]
+                normalized_used = set(normalize_ingredients(used))
+                normalized_missed = set(normalize_ingredients(missed))
 
-                missing_html = (
-                    f"<p>❌ <b>Missing:</b> <span style='color:#a33;'>{', '.join(sorted(missing))}</span></p>"
-                    if len(missing) > 0 else ""
-                )
+                # Only show if detected ingredients are part of the recipe
+                if not set(normalized_detected).intersection(normalized_used):
+                    continue
 
-                st.markdown(f"""
-                    <div style="border: 1px solid #e4d0ff; border-radius: 10px; padding: 1rem; background-color: #fdf6ff; margin-bottom: 1rem; color:#5b0066;">
-                        <h4 style="color:#a23dcf;">🍽️ <b>{dish}</b></h4>
-                        <p>✅ <b style="color:black;">Matched:</b> <span style="color:#2c7a7b;">{', '.join(sorted(matched))}</span></p>
-                        {missing_html}
-                        <h5 style="margin-top:10px;">🥗 Nutritional Info:</h5>
-                        <ul style="line-height: 1.5;">{nutrient_html}</ul>
-                    </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"### 🍴 {title}")
+                if image_url:
+                    st.image(image_url, use_container_width=True)
 
+                if used:
+                    st.success("✅ Matched ingredients: " + ", ".join(used))
+                if missed:
+                    st.warning("❌ Missing ingredients: " + ", ".join(missed))
+
+                # Nutrition info
+                info = get_recipe_info(recipe["id"])
+                if info.get("nutrition") and info["nutrition"].get("nutrients"):
+                    st.markdown("**🥗 Nutrition Info (Top 5):**")
+                    for n in info["nutrition"]["nutrients"][:5]:
+                        st.write(f"- {n['name']}: {n['amount']} {n['unit']}")
+
+                st.markdown("---")
         else:
-            st.info("No recipe suggestions based on current detections.")
+            st.warning("⚠️ No recipes found. Try with more common ingredients.")
