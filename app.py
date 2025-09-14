@@ -12,8 +12,6 @@ if not SPOONACULAR_API_KEY:
     st.error("⚠️ Spoonacular API key not found. Please check your .env file.")
 
 # ----------------- Helper Functions -----------------
-
-# Ingredient normalization
 def normalize_ingredients(ingredients):
     mapping = {
         "tomato": "tomatoes",
@@ -26,7 +24,6 @@ def normalize_ingredients(ingredients):
     }
     return [mapping.get(ing.lower(), ing.lower()) for ing in ingredients]
 
-# Fetch recipes by ingredients
 def get_recipes(ingredients, number=5):
     url = "https://api.spoonacular.com/recipes/findByIngredients"
     params = {
@@ -43,7 +40,6 @@ def get_recipes(ingredients, number=5):
         st.error(f"⚠️ Error {response.status_code}: {response.text}")
         return []
 
-# Fetch full recipe info with nutrition
 def get_recipe_info(recipe_id):
     url = f"https://api.spoonacular.com/recipes/{recipe_id}/information"
     params = {"apiKey": SPOONACULAR_API_KEY, "includeNutrition": True}
@@ -55,7 +51,6 @@ def get_recipe_info(recipe_id):
 # ----------------- Load YOLOv5 Model -----------------
 @st.cache_resource
 def load_model():
-    # Using torch.hub to load custom trained YOLOv5 model
     model = torch.hub.load('ultralytics/yolov5', 'custom', path='nutrition_best_windows.pt', force_reload=True)
     return model
 
@@ -63,31 +58,42 @@ model = load_model()
 
 # ----------------- Streamlit UI -----------------
 st.title("🥗 Smart Recipe Recommender")
-st.write("Upload an image of food items and get recipe suggestions with nutrition info!")
+st.write("Upload one or more images of food items to get recipe suggestions with nutrition info!")
 
-uploaded_file = st.file_uploader("📸 Upload a fridge/ingredient photo", type=["jpg", "jpeg", "png"])
+uploaded_files = st.file_uploader(
+    "📸 Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+)
 
-if uploaded_file:
-    image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Uploaded Image", use_container_width=True)
+if uploaded_files:
+    combined_detected = set()
 
-    # ----------------- Run YOLOv5 Detection -----------------
-    with st.spinner("🔍 Detecting ingredients..."):
-        results = model(image)  # pass PIL image directly
-        detections = results.pandas().xyxy[0]  # pandas DataFrame
-        detected_items = detections[detections['confidence'] > 0.3]['name'].tolist()
-        detected_items = list(set(detected_items))  # remove duplicates
+    for uploaded_file in uploaded_files:
+        st.markdown(f"---\n### 📷 {uploaded_file.name}")
+        image = Image.open(uploaded_file).convert("RGB")
+        st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    if not detected_items:
-        st.warning("⚠️ No ingredients detected. Please upload a clearer image.")
-    else:
-        st.markdown("### ✅ Detected Ingredients:")
-        st.write(", ".join(detected_items))
+        # YOLOv5 detection
+        with st.spinner(f"🔍 Detecting ingredients in {uploaded_file.name}..."):
+            results = model(image)
+            detections = results.pandas().xyxy[0]
+            detected_items = detections[detections['confidence'] > 0.3]['name'].tolist()
+            detected_items = list(set(detected_items))  # remove duplicates
 
-        # Normalize for Spoonacular API
-        normalized_detected = normalize_ingredients(detected_items)
+        if detected_items:
+            st.success(f"✅ Detected in this image: {', '.join(detected_items)}")
+            combined_detected.update(detected_items)
+        else:
+            st.warning(f"⚠️ No ingredients detected in {uploaded_file.name}.")
 
-        # ----------------- Fetch Recipes -----------------
+    if combined_detected:
+        st.markdown("---")
+        st.header("🍛 Combined Detected Ingredients Across All Images")
+        st.write(", ".join(sorted(combined_detected)))
+
+        # Normalize ingredients
+        normalized_detected = normalize_ingredients(combined_detected)
+
+        # Fetch recipes
         recipes = get_recipes(normalized_detected, number=10)
 
         if recipes:
@@ -96,33 +102,29 @@ if uploaded_file:
             for recipe in recipes:
                 title = recipe.get("title", "Unknown Dish")
                 image_url = recipe.get("image", "")
-
-                # Ingredients info
                 used = [ing.get("name", "").lower() for ing in recipe.get("usedIngredients", [])]
                 missed = [ing.get("name", "").lower() for ing in recipe.get("missedIngredients", [])]
                 normalized_used = set(normalize_ingredients(used))
                 normalized_missed = set(normalize_ingredients(missed))
 
-                # Only show if detected ingredients are part of the recipe
                 if not set(normalized_detected).intersection(normalized_used):
                     continue
 
                 st.markdown(f"### 🍴 {title}")
                 if image_url:
                     st.image(image_url, use_container_width=True)
-
                 if used:
                     st.success("✅ Matched ingredients: " + ", ".join(used))
                 if missed:
                     st.warning("❌ Missing ingredients: " + ", ".join(missed))
 
-                # Nutrition info
                 info = get_recipe_info(recipe["id"])
                 if info.get("nutrition") and info["nutrition"].get("nutrients"):
                     st.markdown("**🥗 Nutrition Info (Top 5):**")
                     for n in info["nutrition"]["nutrients"][:5]:
                         st.write(f"- {n['name']}: {n['amount']} {n['unit']}")
-
                 st.markdown("---")
         else:
             st.warning("⚠️ No recipes found. Try with more common ingredients.")
+    else:
+        st.warning("⚠️ No ingredients detected in any uploaded images.")
