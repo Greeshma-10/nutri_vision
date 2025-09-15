@@ -1,30 +1,123 @@
 import os
-import streamlit as st
+import io
+import json
+import time
 import requests
+import traceback
+from typing import List, Set, Dict
 from PIL import Image
 from dotenv import load_dotenv
+import streamlit as st
 import torch
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from difflib import get_close_matches
 
 # ----------------- Load .env and API key -----------------
 load_dotenv()
 SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
-if not SPOONACULAR_API_KEY:
-    st.error("⚠️ Spoonacular API key not found. Please check your .env file.")
 
-# ----------------- Helper Functions -----------------
-def normalize_ingredients(ingredients):
-    mapping = {
-        "tomato": "tomatoes",
-        "potato": "potatoes",
-        "onion": "onions",
-        "chili": "chili pepper",
-        "capsicum": "bell pepper",
-        "eggplant": "eggplant",
-        "brinjal": "eggplant"
-    }
-    return [mapping.get(ing.lower(), ing.lower()) for ing in ingredients]
+# ----------------- App config -----------------
+st.set_page_config(page_title="Smart Recipe Recommender", layout="wide")
+st.title("🥗 Smart Recipe Recommender — Refactored")
+st.write("Upload one or more images of food items to get recipe suggestions with robust matching, error handling and expandable nutrition.")
 
-def get_recipes(ingredients, number=5):
+# ----------------- Utility: resilient requests session -----------------
+def requests_session_with_retries(total_retries=3, backoff_factor=0.3, status_forcelist=(429, 500, 502, 503, 504)):
+    session = requests.Session()
+    retries = Retry(total=total_retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist, allowed_methods=["GET", "POST"])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    session.mount('http://', HTTPAdapter(max_retries=retries))
+    return session
+
+http = requests_session_with_retries()
+
+# ----------------- Ingredient normalization & synonyms -----------------
+# Expand this mapping as you discover mismatches. Also we offer fuzzy fallback.
+SYNONYMS = {
+    "tomato": "tomatoes",
+    "tomatoes": "tomatoes",
+    "potato": "potatoes",
+    "potatoes": "potatoes",
+    "onion": "onions",
+    "chili": "chili pepper",
+    "green chili": "chili pepper",
+    "capsicum": "bell pepper",
+    "bell pepper": "bell pepper",
+    "eggplant": "eggplant",
+    "brinjal": "eggplant",
+    "coriander": "cilantro",
+    "cilantro": "cilantro",
+    "garlic clove": "garlic",
+    "garlic": "garlic",
+    "ginger root": "ginger",
+    "ginger": "ginger",
+}
+
+# If rapidfuzz is available prefer it for fuzzy matching. Otherwise fallback to difflib.
+try:
+    from rapidfuzz import process as rf_process
+    RAPIDFUZZ_AVAILABLE = True
+except Exception:
+    RAPIDFUZZ_AVAILABLE = False
+
+# A small cache of successful ingredient normalizations observed so far
+if 'normalize_cache' not in st.session_state:
+    st.session_state.normalize_cache = {}
+
+
+def normalize_ingredient(ing: str) -> str:
+    """Normalize a single ingredient using explicit synonyms then fuzzy fallback."""
+    if not ing:
+        return ing
+    key = ing.strip().lower()
+    if key in st.session_state.normalize_cache:
+        return st.session_state.normalize_cache[key]
+
+    # direct synonyms
+    if key in SYNONYMS:
+        st.session_state.normalize_cache[key] = SYNONYMS[key]
+        return SYNONYMS[key]
+
+    # try token simplifications (remove plural s, trailing words)
+    tokens = key.replace('-', ' ').split()
+    candidates = [" ".join(tokens[:i+1]) for i in range(len(tokens))]
+    for c in candidates[::-1]:
+        if c in SYNONYMS:
+            st.session_state.normalize_cache[key] = SYNONYMS[c]
+            return SYNONYMS[c]
+
+    # fuzzy match against known synonyms keys
+    choices = list(SYNONYMS.keys())
+    if RAPIDFUZZ_AVAILABLE:
+        match = rf_process.extractOne(key, choices, score_cutoff=70)
+        if match:
+            mapped = SYNONYMS[match[0]]
+            st.session_state.normalize_cache[key] = mapped
+            return mapped
+    else:
+        close = get_close_matches(key, choices, n=1, cutoff=0.7)
+        if close:
+            mapped = SYNONYMS[close[0]]
+            st.session_state.normalize_cache[key] = mapped
+            return mapped
+
+    # no match found — return original (lowercase)
+    st.session_state.normalize_cache[key] = key
+    return key
+
+
+def normalize_ingredients(ings: List[str]) -> List[str]:
+    return sorted(list({normalize_ingredient(i) for i in ings if i}))
+
+# ----------------- API helpers (cached for performance) -----------------
+
+@st.cache_data(ttl=60*60)
+def get_recipes_from_spoonacular(ingredients: List[str], number: int = 5):
+    """Call Spoonacular's findByIngredients with retries + caching."""
+    if not SPOONACULAR_API_KEY:
+        return {"error": "missing_api_key"}
+
     url = "https://api.spoonacular.com/recipes/findByIngredients"
     params = {
         "apiKey": SPOONACULAR_API_KEY,
@@ -33,98 +126,210 @@ def get_recipes(ingredients, number=5):
         "ranking": 1,
         "ignorePantry": True
     }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error(f"⚠️ Error {response.status_code}: {response.text}")
-        return []
+    try:
+        resp = http.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            return {"error": f"status_{resp.status_code}", "message": resp.text}
+    except Exception as e:
+        return {"error": "exception", "message": str(e)}
 
-def get_recipe_info(recipe_id):
+@st.cache_data(ttl=60*60)
+def get_recipe_info_spoonacular(recipe_id: int):
+    if not SPOONACULAR_API_KEY:
+        return {"error": "missing_api_key"}
     url = f"https://api.spoonacular.com/recipes/{recipe_id}/information"
     params = {"apiKey": SPOONACULAR_API_KEY, "includeNutrition": True}
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json()
-    return {}
+    try:
+        resp = http.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            return {"error": f"status_{resp.status_code}", "message": resp.text}
+    except Exception as e:
+        return {"error": "exception", "message": str(e)}
 
-# ----------------- Load YOLOv5 Model -----------------
+# ----------------- Model loading with robust error handling -----------------
 @st.cache_resource
-def load_model():
-    model = torch.hub.load('ultralytics/yolov5', 'custom', path='nutrition_best_windows.pt', force_reload=True)
-    return model
+def load_yolov5_model(path: str = 'nutrition_best_windows.pt'):
+    """Attempt to load YOLOv5 model from local path via torch.hub. If fails, explain reason."""
+    try:
+        # Force reload only when the file has changed. streamlit's cache_resource handles this.
+        model = torch.hub.load('ultralytics/yolov5', 'custom', path=path, force_reload=False)
+        return model
+    except Exception as e:
+        st.error("Failed to load YOLOv5 model. Check that:\n1) torch & dependencies are installed,\n2) the path is correct and accessible,\n3) you have internet for torch.hub (first run).\n\nError: " + str(e))
+        st.write(traceback.format_exc())
+        return None
 
-model = load_model()
+# Load model (deferred until user action to avoid long cold starts)
+if 'model_loaded' not in st.session_state:
+    st.session_state.model_loaded = False
 
-# ----------------- Streamlit UI -----------------
-st.title("🥗 Smart Recipe Recommender")
-st.write("Upload one or more images of food items to get recipe suggestions with nutrition info!")
+with st.sidebar:
+    st.header("Settings")
+    confidence = st.slider("Detection confidence threshold", 0.0, 1.0, 0.35, 0.05)
+    top_k = st.slider("Number of recipes to fetch", 1, 20, 8)
+    show_full_nutrition = st.checkbox("Show full nutrition details", value=False)
+    batch_infer = st.checkbox("Load model now (may take time)", value=False)
 
-uploaded_files = st.file_uploader(
-    "📸 Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
-)
+    if batch_infer and not st.session_state.model_loaded:
+        with st.spinner("Loading YOLOv5 model. This may take ~30s on first run..."):
+            model_attempt = load_yolov5_model()
+            if model_attempt is not None:
+                st.session_state.model_loaded = True
+                st.success("Model loaded and ready.")
 
+# File uploader
+uploaded_files = st.file_uploader("📸 Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+
+# Local fallback recipes (simple examples) to use when Spoonacular fails or rate-limited.
+FALLBACK_RECIPES = [
+    {"title": "Tomato Omelette", "usedIngredients": ["tomatoes","eggs"], "missedIngredients": ["salt","pepper"], "id": 999001},
+    {"title": "Spicy Potato Stir-fry", "usedIngredients": ["potatoes","chili pepper"], "missedIngredients": ["oil","salt"], "id": 999002}
+]
+
+# Main processing
 if uploaded_files:
-    combined_detected = set()
-
-    for uploaded_file in uploaded_files:
-        st.markdown(f"---\n### 📷 {uploaded_file.name}")
-        image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="Uploaded Image", use_container_width=True)
-
-        # YOLOv5 detection
-        with st.spinner(f"🔍 Detecting ingredients in {uploaded_file.name}..."):
-            results = model(image)
-            detections = results.pandas().xyxy[0]
-            detected_items = detections[detections['confidence'] > 0.3]['name'].tolist()
-            detected_items = list(set(detected_items))  # remove duplicates
-
-        if detected_items:
-            st.success(f"✅ Detected in this image: {', '.join(detected_items)}")
-            combined_detected.update(detected_items)
-        else:
-            st.warning(f"⚠️ No ingredients detected in {uploaded_file.name}.")
-
-    if combined_detected:
-        st.markdown("---")
-        st.header("🍛 Combined Detected Ingredients Across All Images")
-        st.write(", ".join(sorted(combined_detected)))
-
-        # Normalize ingredients
-        normalized_detected = normalize_ingredients(combined_detected)
-
-        # Fetch recipes
-        recipes = get_recipes(normalized_detected, number=10)
-
-        if recipes:
-            st.markdown("---")
-            st.subheader("🍽️ Recommended Recipes")
-            for recipe in recipes:
-                title = recipe.get("title", "Unknown Dish")
-                image_url = recipe.get("image", "")
-                used = [ing.get("name", "").lower() for ing in recipe.get("usedIngredients", [])]
-                missed = [ing.get("name", "").lower() for ing in recipe.get("missedIngredients", [])]
-                normalized_used = set(normalize_ingredients(used))
-                normalized_missed = set(normalize_ingredients(missed))
-
-                if not set(normalized_detected).intersection(normalized_used):
-                    continue
-
-                st.markdown(f"### 🍴 {title}")
-                if image_url:
-                    st.image(image_url, use_container_width=True)
-                if used:
-                    st.success("✅ Matched ingredients: " + ", ".join(used))
-                if missed:
-                    st.warning("❌ Missing ingredients: " + ", ".join(missed))
-
-                info = get_recipe_info(recipe["id"])
-                if info.get("nutrition") and info["nutrition"].get("nutrients"):
-                    st.markdown("**🥗 Nutrition Info (Top 5):**")
-                    for n in info["nutrition"]["nutrients"][:5]:
-                        st.write(f"- {n['name']}: {n['amount']} {n['unit']}")
-                st.markdown("---")
-        else:
-            st.warning("⚠️ No recipes found. Try with more common ingredients.")
+    # load model lazily if not yet loaded
+    if not st.session_state.model_loaded:
+        with st.spinner("Loading YOLOv5 model (deferred). If this stalls, press the checkbox in the sidebar to force load.)"):
+            model = load_yolov5_model()
+            if model:
+                st.session_state.model_loaded = True
+            else:
+                st.warning("Model not available — detections will be skipped. You can still try manual ingredients below.")
     else:
-        st.warning("⚠️ No ingredients detected in any uploaded images.")
+        model = load_yolov5_model()
+
+    combined_detected: Set[str] = set()
+    col1, col2 = st.columns([1,2])
+
+    with col1:
+        st.subheader("Uploaded images & detections")
+        for uploaded_file in uploaded_files:
+            try:
+                st.markdown(f"---\n### 📷 {uploaded_file.name}")
+                image = Image.open(uploaded_file).convert("RGB")
+                st.image(image, caption=uploaded_file.name, use_container_width=True)
+
+                if st.session_state.model_loaded and model is not None:
+                    with st.spinner(f"Detecting ingredients in {uploaded_file.name}..."):
+                        results = model(image)
+                        detections = results.pandas().xyxy[0]
+                        items = detections[detections['confidence'] >= confidence]['name'].tolist()
+                        items = list(dict.fromkeys(items))  # preserve order, remove duplicates
+                        if items:
+                            st.success("Detected: " + ", ".join(items))
+                            combined_detected.update(items)
+                        else:
+                            st.info("No confident detections in this image.")
+                else:
+                    st.info("Model not loaded — skipping automatic detection for this image.")
+            except Exception as e:
+                st.error(f"Error processing {uploaded_file.name}: {e}")
+                st.write(traceback.format_exc())
+
+    with col2:
+        st.subheader("Ingredients & Recipe Fetch")
+        st.markdown("You can edit detected ingredients before fetching recipes.")
+
+        # show combined detections in an editable text area for corrections
+        combined_list = sorted(list(combined_detected))
+        detected_text = "\n".join(combined_list)
+        manual_input = st.text_area("Detected ingredients (one per line) — edit if needed", value=detected_text, height=200)
+        manual_ings = [l.strip() for l in manual_input.splitlines() if l.strip()]
+
+        # normalize
+        normalized = normalize_ingredients(manual_ings)
+        st.markdown("**Normalized ingredients (used for recipe matching):**")
+        st.write(", ".join(normalized) if normalized else "(none)")
+
+        if st.button("🔎 Fetch recipes"):
+            if not normalized:
+                st.warning("No ingredients provided. Type or upload images with detectable items.")
+            else:
+                with st.spinner("Querying Spoonacular..."):
+                    recipes = get_recipes_from_spoonacular(normalized, number=top_k)
+
+                if isinstance(recipes, dict) and recipes.get('error'):
+                    st.error("Spoonacular API error: " + recipes.get('error') + (" — " + recipes.get('message') if recipes.get('message') else ""))
+                    st.info("Using fallback local recipes.")
+                    recipes = FALLBACK_RECIPES
+
+                # filter recipes that actually use at least one normalized detected ingredient
+                filtered = []
+                for r in recipes:
+                    # spoonacular returns usedIngredients as list of dicts; fallback uses strings
+                    used = []
+                    if isinstance(r.get('usedIngredients', []), list) and r['usedIngredients'] and isinstance(r['usedIngredients'][0], dict):
+                        used = [u.get('name', '').lower() for u in r['usedIngredients']]
+                    else:
+                        used = [u.lower() for u in r.get('usedIngredients', [])]
+
+                    norm_used = set(normalize_ingredients(used))
+                    if norm_used.intersection(set(normalized)):
+                        filtered.append(r)
+
+                if not filtered:
+                    st.warning("No good recipe matches found from results — showing top raw results instead.")
+                    filtered = recipes
+
+                for r in filtered:
+                    st.markdown("---")
+                    title = r.get('title', 'Unknown')
+                    st.markdown(f"### 🍴 {title}")
+                    if r.get('image'):
+                        st.image(r.get('image'))
+
+                    used = []
+                    missed = []
+                    if isinstance(r.get('usedIngredients', []), list) and r['usedIngredients'] and isinstance(r['usedIngredients'][0], dict):
+                        used = [u.get('name', '') for u in r['usedIngredients']]
+                    else:
+                        used = r.get('usedIngredients', [])
+
+                    if isinstance(r.get('missedIngredients', []), list) and r['missedIngredients'] and isinstance(r['missedIngredients'][0], dict):
+                        missed = [m.get('name', '') for m in r['missedIngredients']]
+                    else:
+                        missed = r.get('missedIngredients', [])
+
+                    if used:
+                        st.success("✅ Matched: " + ", ".join(used))
+                    if missed:
+                        st.warning("❌ Missing: " + ", ".join(missed))
+
+                    # show nutrition info if available (fetch detailed info cached)
+                    if r.get('id') and isinstance(r.get('id'), int) and r.get('id') < 900000:
+                        info = get_recipe_info_spoonacular(r['id'])
+                        if info and not info.get('error') and info.get('nutrition'):
+                            nutr = info['nutrition']
+                            if show_full_nutrition:
+                                st.markdown("**Nutrition:**")
+                                for n in nutr.get('nutrients', []):
+                                    st.write(f"- {n['name']}: {n['amount']} {n['unit']}")
+                            else:
+                                st.markdown("**Top nutrients:**")
+                                for n in nutr.get('nutrients', [])[:5]:
+                                    st.write(f"- {n['name']}: {n['amount']} {n['unit']}")
+                        else:
+                            st.info("Nutrition details not available for this recipe.")
+                    else:
+                        # fallback recipes: show simple nutrition hints
+                        st.info("(Fallback recipe — no nutrition from Spoonacular)")
+
+                st.success("Done — recipes shown above.")
+
+else:
+    st.info("Upload images of food items to start. You can also type ingredients manually in the sidebar.")
+
+# Manual ingredient entry in the bottom area
+st.markdown("---")
+st.subheader("Manual input or testing")
+manual = st.text_input("Enter ingredients separated by commas (e.g. tomato, onion, egg)")
+if manual:
+    manual_list = [m.strip() for m in manual.split(',') if m.strip()]
+    st.write("Normalized:", normalize_ingredients(manual_list))
+
+
