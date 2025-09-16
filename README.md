@@ -6,30 +6,33 @@
 
 ## 📸 Demo
 
-| Main Page | Ingredient Detection | Recipe Recommendations | Nutritional Analysis |
+| Main Page | Ingredient Detection | Recipe Recommendations | Nutritional Analysis | Youtube videos |
 | :---: | :---: | :---: | :---: |
-| ![Main Page](https://github.com/user-attachments/assets/68a25f6a-f7b0-4bec-8ff1-c68107385e5f) | ![Ingredient Detection](https://github.com/user-attachments/assets/b61a9e3e-da78-40e0-a5a4-8073a5396f56) | ![Recipe Recommendations](https://github.com/user-attachments/assets/486fd131-a137-4190-9232-0eff2fcb3a74) | ![Nutritional Analysis](https://github.com/user-attachments/assets/dc6be91e-f258-428f-88c8-bde1a9134993) |
+| ![Main Page](https://github.com/user-attachments/assets/6fa1b0d8-eef1-4e6d-99fd-a78ee9964783) | ![Ingredient Detection](https://github.com/user-attachments/assets/93f0af19-1129-4727-a8f7-c13db0673e3d) | ![Recipe Recommendations](https://github.com/user-attachments/assets/cdf712ad-4e99-4102-acbf-5a1b3ef7e9b1) | ![Nutritional Analysis](https://github.com/user-attachments/assets/34dbb8c0-4d30-40c1-9aa8-855876da27c0) | ![Youtube videos](https://github.com/user-attachments/assets/bacbc8d9-ed70-4fb8-ae49-05eb9e29ff90) |
 
 ---
 
-## ✨ Features
+## ✨ Features  
 
--   **📤 Multi-Image Upload**: Analyze one or more photos of your ingredients at once.
--   **🤖 Smart Detection**: Uses a fine-tuned **YOLOv5** model to accurately identify vegetables and other food items.
--   **🍲 Intelligent Recipes**: Recommends healthy Indian recipes based on the combined list of detected ingredients.
--   **📊 Nutritional Insights**: Displays key nutritional values (Calories, Protein, Carbs, Fats) for each recommended dish.
--   **🎨 Clean UI**: Built with a modern, pastel-themed interface and compact cards for easy Browse.
+- 📤 **Multi-Image Upload**: Analyze one or more photos of your ingredients at once.  
+- 🤖 **Smart Detection**: Uses a fine-tuned YOLOv5 model to accurately identify vegetables and other food items.  
+- 🍲 **Intelligent Recipes**: Integrated with **Spoonacular API** to recommend healthy Indian & global recipes based on detected ingredients.  
+- 📊 **Nutritional Insights**: Displays key nutritional values (Calories, Protein, Carbs, Fats) for each recommended dish.  
+- 🎥 **YouTube Video Integration**: Fetches related cooking videos via **YouTube Data API**, making it easy to follow step-by-step instructions.  
+- 🎨 **Clean UI**: Built with a modern, pastel-themed interface and compact cards for easy browsing.  
 
 ---
 
-## 🛠️ Tech Stack
+## 🛠️ Tech Stack  
 
-| Component | Stack & Libraries |
-| :--- | :--- |
-| **Web Framework** | Streamlit |
-| **Object Detection** | YOLOv5, PyTorch, OpenCV |
-| **Data Handling** | Python, NumPy, Pandas, YAML |
-| **Training Platform** | Google Colab with a custom annotated dataset |
+| Component         | Stack & Libraries |  
+|-------------------|-------------------|  
+| Web Framework     | Streamlit         |  
+| Object Detection  | YOLOv5, PyTorch, OpenCV |  
+| Recipe API        | Spoonacular API   |  
+| Video Integration | YouTube Data API v3 |  
+| Data Handling     | Python, NumPy, Pandas, YAML |  
+| Training Platform | Google Colab with a custom annotated dataset |  
 
 ---
 
