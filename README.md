@@ -6,9 +6,16 @@
 
 ## 📸 Demo
 
-| Main Page | Ingredient Detection | Recipe Recommendations | Nutritional Analysis | Youtube videos |
-| :---: | :---: | :---: | :---: |
-| ![Main Page](https://github.com/user-attachments/assets/6fa1b0d8-eef1-4e6d-99fd-a78ee9964783) | ![Ingredient Detection](https://github.com/user-attachments/assets/93f0af19-1129-4727-a8f7-c13db0673e3d) | ![Recipe Recommendations](https://github.com/user-attachments/assets/cdf712ad-4e99-4102-acbf-5a1b3ef7e9b1) | ![Nutritional Analysis](https://github.com/user-attachments/assets/34dbb8c0-4d30-40c1-9aa8-855876da27c0) | ![Youtube videos](https://github.com/user-attachments/assets/bacbc8d9-ed70-4fb8-ae49-05eb9e29ff90) |
+## Main page 
+![Main Page](https://github.com/user-attachments/assets/6fa1b0d8-eef1-4e6d-99fd-a78ee9964783)
+## Ingredient Detection 
+![Ingredient Detection](https://github.com/user-attachments/assets/93f0af19-1129-4727-a8f7-c13db0673e3d)
+## Recipe Recommendation
+![Recipe Recommendations](https://github.com/user-attachments/assets/cdf712ad-4e99-4102-acbf-5a1b3ef7e9b1) 
+## Nutritional Analysis 
+![Nutritional Analysis](https://github.com/user-attachments/assets/34dbb8c0-4d30-40c1-9aa8-855876da27c0) 
+## Youtube videos 
+![Youtube videos](https://github.com/user-attachments/assets/bacbc8d9-ed70-4fb8-ae49-05eb9e29ff90) |
 
 ---
 
