@@ -12,6 +12,7 @@ import torch
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from difflib import get_close_matches
+from urllib.parse import quote_plus
 
 # ----------------- Load .env and API key -----------------
 load_dotenv()
@@ -182,6 +183,49 @@ def get_recipe_info_spoonacular(recipe_id: int):
             return {"error": f"status_{resp.status_code}", "message": resp.text}
     except Exception as e:
         return {"error": "exception", "message": str(e)}
+    
+  
+
+@st.cache_data(ttl=60*60)
+def get_youtube_videos(query: str, max_results: int = 3):
+    """
+    Returns a list of videos [{id, title, channel, thumb, publishedAt}, ...]
+    or a dict with 'error'.
+    """
+    YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+    if not YOUTUBE_API_KEY:
+        return {"error": "missing_api_key"}
+
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "key": YOUTUBE_API_KEY,
+        "q": f"{query} recipe",
+        "part": "snippet",
+        "type": "video",
+        "maxResults": max_results,
+        "safeSearch": "strict",
+    }
+    try:
+        resp = http.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        videos = []
+        for it in items:
+            vid_id = it.get("id", {}).get("videoId")
+            snippet = it.get("snippet", {})
+            if not vid_id:
+                continue
+            videos.append({
+                "id": vid_id,
+                "title": snippet.get("title", ""),
+                "channel": snippet.get("channelTitle", ""),
+                "thumb": snippet.get("thumbnails", {}).get("medium", {}).get("url", ""),
+                "publishedAt": snippet.get("publishedAt", "")
+            })
+        return videos
+    except Exception as e:
+        return {"error": "exception", "message": str(e)}
+
 
 # ----------------- Model loading with robust error handling -----------------
 @st.cache_resource
@@ -204,6 +248,8 @@ with st.sidebar:
     top_k = st.slider("Number of recipes to fetch", 1, 20, 8)
     show_full_nutrition = st.checkbox("Show full nutrition details", value=False)
     batch_infer = st.checkbox("Load model now (may take time)", value=False)
+    show_videos = st.checkbox("Show YouTube video suggestions", value=True)
+
 
     if batch_infer and not st.session_state.model_loaded:
         with st.spinner("Loading YOLOv5 model (this may take ~20-40s first run)..."):
@@ -306,7 +352,7 @@ if uploaded_files:
                 st.markdown("---")
                 st.markdown(f"<div class='recipe-card'><h3>🍴 {r.get('title', 'Unknown')}</h3></div>", unsafe_allow_html=True)
                 if r.get('image'):
-                    st.image(r.get('image'), use_column_width=False)
+                    st.image(r.get('image'), use_container_width=False)
 
                 used = []
                 missed = []
@@ -324,6 +370,7 @@ if uploaded_files:
                 if missed:
                     st.warning("❌ Missing: " + ", ".join(missed))
 
+                # --- Nutrition ---
                 if r.get('id') and isinstance(r.get('id'), int) and r.get('id') < 900000:
                     info = get_recipe_info_spoonacular(r['id'])
                     if info and not info.get('error') and info.get('nutrition'):
@@ -342,9 +389,42 @@ if uploaded_files:
                 else:
                     st.info("(Fallback recipe — no nutrition available)")
 
-            st.success("✅ Done — recipes displayed above.")
-else:
-    st.info("📥 Upload images of food items to start. You can also type ingredients manually in the sidebar.")
+                # --- YouTube videos per recipe ---
+                if show_videos:
+                    query = f"{r.get('title', '')} recipe"
+                    vids = get_youtube_videos(query, max_results=1)
+
+                    if vids:
+                        with st.expander("🎥 YouTube Related Videos"):
+                            for i, v in enumerate(vids):
+                                st.markdown(f"**{v['title']}** — {v['channel']}")
+                                st.markdown(f"[Open on YouTube](https://www.youtube.com/watch?v={v['id']})")
+
+                                if i == 0:
+                                    # Embed first video
+                                    st.video(f"https://www.youtube.com/watch?v={v['id']}")
+                                else:
+                                    # Show thumbnail for others
+                                    if v.get('thumb'):
+                                        st.image(v['thumb'], width=320)
+
+                                st.markdown("---")
+
+                    elif isinstance(vids, dict) and vids.get('error'):
+                        msg = vids.get('message', '')
+                        if vids.get('error') == 'missing_api_key':
+                            st.info("YouTube API key not configured. Showing search link instead.")
+                        else:
+                            st.info("YouTube API error: " + (msg or vids.get('error')))
+                        safe_query = quote_plus(query)
+                        st.markdown(f"[🔎 Search on YouTube](https://www.youtube.com/results?search_query={safe_query})")
+
+
+        st.success("✅ Done — recipes and videos displayed above.")
+
+    else:       
+        st.info("📥 Upload images of food items to start. You can also type ingredients manually in the sidebar.")
+
 
 # Manual ingredient entry
 st.markdown("---")
