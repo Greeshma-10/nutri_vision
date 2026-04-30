@@ -102,6 +102,7 @@ The application will open in your web browser.
 
 ---
 
+
 ## 📁 Project Structure
 ```text
 nutriVision/
