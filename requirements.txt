@@ -1,16 +1,6 @@
 streamlit
-torch
-numpy
-opencv-python
-Pillow
-pyyaml
-streamlit
-torch
-torchvision
+ultralytics
 opencv-python-headless
 pillow
 numpy
-pandas
-ultralytics
-load_env
 python-dotenv
