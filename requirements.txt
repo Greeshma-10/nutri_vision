@@ -4,3 +4,11 @@ numpy
 opencv-python
 Pillow
 pyyaml
+streamlit
+torch
+torchvision
+opencv-python-headless
+pillow
+numpy
+pandas
+ultralytics
